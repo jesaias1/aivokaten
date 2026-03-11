@@ -6,7 +6,7 @@ import { useEffect } from 'react'
 import Link from 'next/link'
 
 export default function KontoPage() {
-  const { user, loading, signOut } = useAuth()
+  const { user, loading, signOut, isAdmin } = useAuth()
   const router = useRouter()
 
   useEffect(() => {
@@ -81,7 +81,18 @@ export default function KontoPage() {
           <div className="space-y-4">
             <div>
               <label className="text-xs text-navy-500 font-medium block mb-1">Email</label>
-              <p className="text-sm text-navy-200">{user.email}</p>
+              <div className="flex items-center gap-2">
+                <p className="text-sm text-navy-200">{user.email}</p>
+                {isAdmin && (
+                  <span className="px-2 py-0.5 rounded-full bg-gold-400/15 text-gold-300 text-[10px] font-semibold tracking-wide">
+                    ADMIN
+                  </span>
+                )}
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-navy-500 font-medium block mb-1">Rolle</label>
+              <p className="text-sm text-navy-200">{isAdmin ? 'Administrator' : 'Bruger'}</p>
             </div>
             <div>
               <label className="text-xs text-navy-500 font-medium block mb-1">Oprettet</label>
