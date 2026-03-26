@@ -106,7 +106,7 @@ export default function LandingPage() {
               mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6'
             }`}
           >
-            AI-drevet juridisk rådgivning specialiseret i dansk erhvervsret. Bygget til advokater der kræver præcision.
+            AI-drevet juridisk assistent til alle områder af dansk ret. Bygget til advokater der kræver præcision og korrekte lovhenvisninger.
           </p>
 
           {/* CTA */}
@@ -134,19 +134,23 @@ export default function LandingPage() {
       {/* Features — minimal */}
       <section className="py-28 px-8">
         <div className="max-w-4xl mx-auto">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-x-16 gap-y-14">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-x-12 gap-y-14">
             {[
               {
-                label: 'Dansk lovgivning',
-                desc: 'Selskabsret, aftaleret, erhvervslejeret og konkurrenceret — med præcise paragrafhenvisninger.',
+                label: 'Alle retsområder',
+                desc: 'Strafferet, familieret, erhvervsret, skatteret og meget mere — ét samlet juridisk arbejdsredskab.',
+              },
+              {
+                label: 'Præcise paragrafhenvisninger',
+                desc: 'Automatiske henvisninger til specifikke love og paragraffer fra dansk lovgivning.',
               },
               {
                 label: 'Vælg AI-model',
-                desc: 'Skift mellem Claude og ChatGPT. Sammenlign perspektiver fra flere AI-modeller.',
+                desc: 'Skift mellem Claude og ChatGPT. Sammenlign perspektiver fra begge modeller side om side.',
               },
               {
-                label: 'Sikker & privat',
-                desc: 'Dine samtaler er beskyttet. Fuld samtalehistorik gemt lokalt i din browser.',
+                label: 'Fuld samtalehistorik',
+                desc: 'Alle samtaler gemmes i din browser. Fortsæt tidligere sessioner og søg i historikken.',
               },
             ].map((f, i) => (
               <div
@@ -179,7 +183,7 @@ export default function LandingPage() {
             &ldquo;Spar timer på juridisk research. Få svar med lovhenvisninger — øjeblikkeligt.&rdquo;
           </p>
           <p className="text-sm text-white/30 font-light">
-            Bygget til danske erhvervsadvokater
+            Bygget til danske advokater
           </p>
         </div>
       </section>

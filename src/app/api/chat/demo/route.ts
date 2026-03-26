@@ -136,7 +136,8 @@ function matchResponse(userMessage: string): string {
 
 export async function POST(req: Request) {
   try {
-    const { messages } = await req.json()
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { messages, systemPrompt: _systemPrompt } = await req.json()
 
     if (!messages || !Array.isArray(messages)) {
       return Response.json({ error: 'Beskeder mangler' }, { status: 400 })

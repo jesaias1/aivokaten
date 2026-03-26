@@ -6,7 +6,10 @@ export const maxDuration = 60
 
 export async function POST(req: Request) {
   try {
-    const { messages } = await req.json()
+    const { messages, systemPrompt: incomingSystemPrompt } = await req.json()
+    const resolvedSystemPrompt: string = typeof incomingSystemPrompt === 'string' && incomingSystemPrompt.length > 0
+      ? incomingSystemPrompt
+      : SYSTEM_PROMPT
 
     if (!messages || !Array.isArray(messages)) {
       return Response.json({ error: 'Beskeder mangler' }, { status: 400 })
@@ -27,7 +30,7 @@ export async function POST(req: Request) {
       stream = await client.messages.stream({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 4096,
-        system: SYSTEM_PROMPT,
+        system: resolvedSystemPrompt,
         messages: messages.map((m: { role: string; content: string }) => ({
           role: m.role as 'user' | 'assistant',
           content: m.content,

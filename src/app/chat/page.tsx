@@ -4,7 +4,8 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { useAuth } from '@/context/AuthContext'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import type { AIModel, ChatMessage, ChatSession } from '@/lib/types'
+import type { AIModel, ChatMessage, ChatSession, LegalArea } from '@/lib/types'
+import { LEGAL_AREAS, buildSystemPrompt } from '@/lib/types'
 
 function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2)
@@ -16,8 +17,10 @@ export default function ChatPage() {
   const [sessions, setSessions] = useState<ChatSession[]>([])
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [selectedModel, setSelectedModel] = useState<AIModel>('demo')
+  const [selectedArea, setSelectedArea] = useState<LegalArea>('all')
   const [input, setInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
+  const [isBothMode, setIsBothMode] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -87,6 +90,10 @@ export default function ChatPage() {
 
   const handleSend = async () => {
     if (!input.trim() || isStreaming) return
+    if (isBothMode) {
+      await handleSendBoth()
+      return
+    }
 
     let currentSessionId = activeSessionId
     let currentSessions = [...sessions]
@@ -151,10 +158,11 @@ export default function ChatPage() {
         .map((m) => ({ role: m.role, content: m.content }))
 
       const endpoint = selectedModel === 'claude' ? '/api/chat/claude' : selectedModel === 'openai' ? '/api/chat/openai' : '/api/chat/demo'
+      const systemPrompt = buildSystemPrompt(selectedArea)
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: apiMessages }),
+        body: JSON.stringify({ messages: apiMessages, systemPrompt }),
       })
 
       if (!response.ok) {
@@ -210,6 +218,127 @@ export default function ChatPage() {
     }
   }
 
+  // "Ask both models" — fires Claude & ChatGPT in parallel, stores two assistant messages
+  const handleSendBoth = async () => {
+    if (!input.trim() || isStreaming) return
+
+    let currentSessionId = activeSessionId
+    let currentSessions = [...sessions]
+
+    if (!currentSessionId) {
+      const session: ChatSession = {
+        id: generateId(),
+        title: 'Ny samtale',
+        messages: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }
+      currentSessions = [session, ...currentSessions]
+      currentSessionId = session.id
+      setActiveSessionId(session.id)
+    }
+
+    const userMessage: ChatMessage = {
+      id: generateId(),
+      role: 'user',
+      content: input.trim(),
+      timestamp: Date.now(),
+    }
+
+    currentSessions = currentSessions.map((s) =>
+      s.id === currentSessionId
+        ? {
+            ...s,
+            messages: [...s.messages, userMessage],
+            title: s.messages.length === 0 ? input.trim().slice(0, 50) : s.title,
+            updatedAt: Date.now(),
+          }
+        : s
+    )
+    saveSessions(currentSessions)
+    setInput('')
+    setIsStreaming(true)
+
+    const claudeMsg: ChatMessage = { id: generateId(), role: 'assistant', content: '', model: 'claude', timestamp: Date.now() }
+    const openaiMsg: ChatMessage = { id: generateId(), role: 'assistant', content: '', model: 'openai', timestamp: Date.now() }
+
+    currentSessions = currentSessions.map((s) =>
+      s.id === currentSessionId
+        ? { ...s, messages: [...s.messages, claudeMsg, openaiMsg] }
+        : s
+    )
+    saveSessions(currentSessions)
+
+    const systemPrompt = buildSystemPrompt(selectedArea)
+    const sessionMessages = currentSessions.find((s) => s.id === currentSessionId)?.messages || []
+    const apiMessages = sessionMessages
+      .filter((m) => m.id !== claudeMsg.id && m.id !== openaiMsg.id)
+      .map((m) => ({ role: m.role, content: m.content }))
+
+    const streamInto = async (endpoint: string, msgId: string) => {
+      try {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages: apiMessages, systemPrompt }),
+        })
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}))
+          throw new Error(errorData.error || `API fejl: ${response.status}`)
+        }
+        const reader = response.body?.getReader()
+        const decoder = new TextDecoder()
+        let fullContent = ''
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            fullContent += decoder.decode(value)
+            // We need a local ref to update — use functional setSessions
+            setSessions((prev) => {
+              const updated = prev.map((s) =>
+                s.id === currentSessionId
+                  ? {
+                      ...s,
+                      messages: s.messages.map((m) =>
+                        m.id === msgId ? { ...m, content: fullContent } : m
+                      ),
+                      updatedAt: Date.now(),
+                    }
+                  : s
+              )
+              localStorage.setItem('aivokaten-sessions', JSON.stringify(updated))
+              return updated
+            })
+          }
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Ukendt fejl'
+        setSessions((prev) => {
+          const updated = prev.map((s) =>
+            s.id === currentSessionId
+              ? {
+                  ...s,
+                  messages: s.messages.map((m) =>
+                    m.id === msgId ? { ...m, content: `⚠️ Fejl: ${errorMsg}` } : m
+                  ),
+                }
+              : s
+          )
+          localStorage.setItem('aivokaten-sessions', JSON.stringify(updated))
+          return updated
+        })
+      }
+    }
+
+    await Promise.all([
+      streamInto('/api/chat/claude', claudeMsg.id),
+      streamInto('/api/chat/openai', openaiMsg.id),
+    ])
+
+    setIsStreaming(false)
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -222,6 +351,105 @@ export default function ChatPage() {
         </div>
       </div>
     )
+  }
+
+  // Determine if the active session has a "both" message pair at the end
+  const renderMessages = () => {
+    if (!activeSession) return null
+    const msgs = activeSession.messages
+    const rendered: React.ReactNode[] = []
+    let i = 0
+    while (i < msgs.length) {
+      const msg = msgs[i]
+      // Check if this is a side-by-side pair (two consecutive assistant messages with different models)
+      if (
+        msg.role === 'assistant' &&
+        i + 1 < msgs.length &&
+        msgs[i + 1].role === 'assistant' &&
+        msg.model !== msgs[i + 1].model
+      ) {
+        const left = msg
+        const right = msgs[i + 1]
+        rendered.push(
+          <div key={`pair-${left.id}-${right.id}`} className="mb-6 animate-fade-in">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[10px] text-navy-500 font-medium uppercase tracking-wider">Begge modeller</span>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              {[left, right].map((m) => (
+                <div key={m.id} className="flex flex-col gap-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <div className={`w-5 h-5 rounded flex items-center justify-center text-[9px] font-bold ${
+                      m.model === 'claude'
+                        ? 'bg-gradient-to-br from-amber-500 to-orange-500 text-white'
+                        : 'bg-gradient-to-br from-green-500 to-emerald-500 text-white'
+                    }`}>
+                      {m.model === 'claude' ? 'C' : 'G'}
+                    </div>
+                    <span className="text-[10px] text-navy-500 font-medium">
+                      {m.model === 'claude' ? 'Claude (Anthropic)' : 'ChatGPT (OpenAI)'}
+                    </span>
+                  </div>
+                  <div className="px-3 py-2.5 rounded-xl glass-light text-xs leading-relaxed whitespace-pre-wrap min-h-[60px]">
+                    {m.content || (
+                      <span className="flex items-center gap-1.5 pt-1">
+                        <span className="w-1.5 h-1.5 bg-gold-400 rounded-full typing-dot" />
+                        <span className="w-1.5 h-1.5 bg-gold-400 rounded-full typing-dot" />
+                        <span className="w-1.5 h-1.5 bg-gold-400 rounded-full typing-dot" />
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )
+        i += 2
+        continue
+      }
+
+      if (msg.role === 'user') {
+        rendered.push(
+          <div key={msg.id} className="animate-fade-in">
+            <div className="flex justify-end mb-4">
+              <div className="max-w-[80%] px-4 py-3 rounded-2xl rounded-tr-sm bg-navy-600/50 text-sm leading-relaxed">
+                {msg.content}
+              </div>
+            </div>
+          </div>
+        )
+      } else {
+        rendered.push(
+          <div key={msg.id} className="mb-4 animate-fade-in">
+            <div className="flex items-center gap-2 mb-1.5">
+              <div className={`w-5 h-5 rounded flex items-center justify-center text-[9px] font-bold ${
+                msg.model === 'claude'
+                  ? 'bg-gradient-to-br from-amber-500 to-orange-500 text-white'
+                  : msg.model === 'openai'
+                  ? 'bg-gradient-to-br from-green-500 to-emerald-500 text-white'
+                  : 'bg-gradient-to-br from-gold-400 to-gold-300 text-navy-950'
+              }`}>
+                {msg.model === 'claude' ? 'C' : msg.model === 'openai' ? 'G' : 'D'}
+              </div>
+              <span className="text-[10px] text-navy-500 font-medium">
+                {msg.model === 'claude' ? 'Claude (Anthropic)' : msg.model === 'openai' ? 'ChatGPT (OpenAI)' : 'Demo'}
+              </span>
+            </div>
+            <div className="max-w-[90%] px-4 py-3 rounded-2xl rounded-tl-sm glass-light text-sm leading-relaxed whitespace-pre-wrap">
+              {msg.content || (
+                <span className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 bg-gold-400 rounded-full typing-dot" />
+                  <span className="w-1.5 h-1.5 bg-gold-400 rounded-full typing-dot" />
+                  <span className="w-1.5 h-1.5 bg-gold-400 rounded-full typing-dot" />
+                </span>
+              )}
+            </div>
+          </div>
+        )
+      }
+      i++
+    }
+    return rendered
   }
 
   return (
@@ -380,13 +608,13 @@ export default function ChatPage() {
                   Velkommen til Aivokaten
                 </h3>
                 <p className="text-navy-400 text-sm mb-6">
-                  Stil et spørgsmål om dansk erhvervsret. Jeg hjælper dig med præcise svar og lovhenvisninger.
+                  Stil et spørgsmål om dansk ret. Vælg retsområde nedenfor for fokuserede svar med præcise lovhenvisninger.
                 </p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {[
                     'Hvad er forskellen mellem ApS og A/S?',
-                    'Hvornår kan en erhvervslejekontrakt opsiges?',
-                    'Hvad siger konkurrencelovens §6?',
+                    'Hvornår kan en lejekontrakt opsiges?',
+                    'Hvad siger straffelovens § 245?',
                     'Krav til bestyrelse i A/S selskaber?',
                   ].map((q, i) => (
                     <button
@@ -404,44 +632,8 @@ export default function ChatPage() {
               </div>
             </div>
           ) : (
-            <div className="max-w-3xl mx-auto py-6 px-4 space-y-1">
-              {activeSession.messages.map((msg) => (
-                <div key={msg.id} className="animate-fade-in">
-                  {msg.role === 'user' ? (
-                    <div className="flex justify-end mb-4">
-                      <div className="max-w-[80%] px-4 py-3 rounded-2xl rounded-tr-sm bg-navy-600/50 text-sm leading-relaxed">
-                        {msg.content}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="mb-4">
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <div className={`w-5 h-5 rounded flex items-center justify-center text-[9px] font-bold ${
-                          msg.model === 'claude'
-                            ? 'bg-gradient-to-br from-amber-500 to-orange-500 text-white'
-                            : msg.model === 'openai'
-                            ? 'bg-gradient-to-br from-green-500 to-emerald-500 text-white'
-                            : 'bg-gradient-to-br from-gold-400 to-gold-300 text-navy-950'
-                        }`}>
-                          {msg.model === 'claude' ? 'C' : msg.model === 'openai' ? 'G' : 'D'}
-                        </div>
-                        <span className="text-[10px] text-navy-500 font-medium">
-                          {msg.model === 'claude' ? 'Claude (Anthropic)' : msg.model === 'openai' ? 'ChatGPT (OpenAI)' : 'Demo'}
-                        </span>
-                      </div>
-                      <div className="max-w-[90%] px-4 py-3 rounded-2xl rounded-tl-sm glass-light text-sm leading-relaxed whitespace-pre-wrap">
-                        {msg.content || (
-                          <span className="flex items-center gap-1.5">
-                            <span className="w-1.5 h-1.5 bg-gold-400 rounded-full typing-dot" />
-                            <span className="w-1.5 h-1.5 bg-gold-400 rounded-full typing-dot" />
-                            <span className="w-1.5 h-1.5 bg-gold-400 rounded-full typing-dot" />
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
+            <div className="max-w-4xl mx-auto py-6 px-4 space-y-1">
+              {renderMessages()}
               <div ref={messagesEndRef} />
             </div>
           )}
@@ -449,7 +641,25 @@ export default function ChatPage() {
 
         {/* Input area */}
         <div className="p-4 border-t border-navy-800">
-          <div className="max-w-3xl mx-auto">
+          <div className="max-w-4xl mx-auto space-y-2">
+            {/* Retsområde dropdown */}
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-navy-500 flex-shrink-0">Retsområde:</span>
+              <select
+                value={selectedArea}
+                onChange={(e) => setSelectedArea(e.target.value as LegalArea)}
+                className="flex-1 bg-navy-800/60 border border-navy-700 text-navy-300 text-xs rounded-lg px-3 py-1.5 focus:outline-none focus:border-gold-400/40 transition-colors hover:border-navy-600 appearance-none cursor-pointer"
+                style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 10px center' }}
+              >
+                {LEGAL_AREAS.map((area) => (
+                  <option key={area.value} value={area.value} className="bg-navy-900">
+                    {area.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Text input + buttons */}
             <div className="flex items-end gap-2 glass rounded-2xl p-2">
               <textarea
                 ref={textareaRef}
@@ -465,17 +675,41 @@ export default function ChatPage() {
                 rows={1}
                 className="flex-1 bg-transparent resize-none text-sm placeholder-navy-500 focus:outline-none px-2 py-1.5 max-h-[200px]"
               />
+              {/* Ask both button */}
+              <button
+                onClick={() => setIsBothMode(!isBothMode)}
+                title="Spørg begge modeller"
+                className={`p-2 rounded-xl text-xs font-medium transition-all flex-shrink-0 border ${
+                  isBothMode
+                    ? 'bg-gradient-to-r from-amber-500/20 to-green-500/20 border-gold-400/30 text-gold-300'
+                    : 'border-navy-700 text-navy-500 hover:text-navy-200 hover:border-navy-600'
+                }`}
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 9h.01M12 9h.01M16 9h.01M9 13h.01M13 13h.01M17 13h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                </svg>
+              </button>
               <button
                 onClick={handleSend}
                 disabled={!input.trim() || isStreaming}
-                className="p-2 rounded-xl bg-gradient-to-r from-gold-400 to-gold-300 text-navy-950 disabled:opacity-30 disabled:cursor-not-allowed hover:shadow-lg hover:shadow-gold-400/20 transition-all"
+                title={isBothMode ? 'Spørg begge modeller' : 'Send'}
+                className={`p-2 rounded-xl disabled:opacity-30 disabled:cursor-not-allowed hover:shadow-lg transition-all flex-shrink-0 ${
+                  isBothMode
+                    ? 'bg-gradient-to-r from-amber-500 to-green-500 text-white hover:shadow-amber-400/20'
+                    : 'bg-gradient-to-r from-gold-400 to-gold-300 text-navy-950 hover:shadow-gold-400/20'
+                }`}
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 19V5m0 0l-7 7m7-7l7 7" />
                 </svg>
               </button>
             </div>
-            <p className="text-[10px] text-navy-600 text-center mt-2">
+            {isBothMode && (
+              <p className="text-[10px] text-gold-400/60 text-center">
+                ✦ Spørger både Claude og ChatGPT — svarene vises side om side
+              </p>
+            )}
+            <p className="text-[10px] text-navy-600 text-center">
               Aivokaten er et AI-værktøj og erstatter ikke professionel juridisk rådgivning
             </p>
           </div>
